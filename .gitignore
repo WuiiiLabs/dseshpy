@@ -1,0 +1,23 @@
+# Python bytecode and cache
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+
+# Environments (uv creates .venv by default)
+.venv/
+env/
+venv/
+
+# Data Science / IDE artifacts
+.ipynb_checkpoints/
+.DS_Store
+*.log
+*.csv
+*.sqlite3
+
+# Distribution / Building
+dist/
+build/
+*.egg-info/
