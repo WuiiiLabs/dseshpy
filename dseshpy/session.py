@@ -3,6 +3,7 @@ session
 ===
 Contains session details 
 """
+from .drops import Routine
 
 class Session:
     """
@@ -49,6 +50,21 @@ class Session:
         self.rent_amount = rent_amount
         self.isCamSession = isCamSession
         self.isScreenShareSession = isScreenShareSession
+        self.drops = {}
+        self.logs = {}
 
-    def dropperRoutine(self):
-        pass
+    def addDropItem(self, name: str, interval: int, amount: int, factor: float, routine: Routine):
+        self.drops[name] = {
+            "interval": interval,
+            "amount": amount,
+            "factor": factor,
+            "routine_": routine
+        }
+    
+    def removeDropItem(self, name: str):
+        self.drops.pop(name)
+
+    def boost(self, xp: int):
+        self.vc_xp += xp
+        if self.vc_xp//1000 > self.vc_level*1000:
+            self.vc_level += 1
