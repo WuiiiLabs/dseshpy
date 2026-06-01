@@ -68,3 +68,19 @@ class Session:
         self.vc_xp += xp
         if self.vc_xp//1000 > self.vc_level*1000:
             self.vc_level += 1
+
+    @classmethod
+    def start(self):
+        self.members_count += 1
+        pass
+
+    def stop(self):
+        pass
+
+    def join(self):
+        self.members_count += 1
+        pass
+
+    def leave(self):
+        self.members_count -= 1
+        pass
