@@ -17,6 +17,7 @@ def convStateToActivity(
     details = {}
     if before.channel:
         channelTransition = "1"
+        details['beforeChannel'] = str(before.channel.id)
 
         if isVcInCategory(
             category=sessionCategory, 
@@ -28,7 +29,8 @@ def convStateToActivity(
 
         if after.channel:
             channelTransition += "1"
-
+            details['beforeChannel'] = str(before.channel.id)
+            
             if isVcInCategory(
                 category=sessionCategory, 
                 channel=after.channel
@@ -57,8 +59,6 @@ def convStateToActivity(
             channelTransition += "0"
             studyTransition += "0"
 
-    return {
-        "channelTransitions": channelTransition,
-        "studyTransition": studyTransition,
-        "details": {}
-    }
+    details["channelTransitions"] = channelTransition
+    details["studyTransition"] = studyTransition
+    return details
