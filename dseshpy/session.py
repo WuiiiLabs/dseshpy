@@ -6,7 +6,10 @@ Contains session details
 import asyncio
 from .drops import Routine
 from datetime import datetime
-from . import collections, converters
+from . import collections
+from converters import (
+    convStateToActivity,
+)
 from discord import VoiceState, Member
 
 # the below import and assigning is just for keyboard auto complete help
@@ -52,7 +55,7 @@ class Session:
         self.isScreenShareSession = isScreenShareSession
         
         self.drops = {} 
-        self.memberRegistry = {} # {userID: currentState}
+        self.memberRegistry = {}
         self.routineTask = None
 
     def addDropItem(self, name: str, interval: int, amount: int, factor: float, routine: Routine):
@@ -92,12 +95,13 @@ class Session:
             self.routineTask.cancel()
             self.routineTask = None
 
-    async def manage(self, member, before: VoiceState, after: VoiceState):
+    async def manage(self, member: Member, before: VoiceState, after: VoiceState):
         """
         Orchestrates member entry/exit and state changes.
         Updates membersCount: {total, noacc, ss, cam}
         """
-        activityInfo = converters.convStateToActivity(
+        activityInfo = convStateToActivity(
+            member=member,
             before=before,
             after=after,
             sessionCategory=self.categoryID
