@@ -17,89 +17,89 @@ def convStateToActivity(
     member: Member,
     before: VoiceState, 
     after: VoiceState, 
-    sessionCategory: CategoryChannel
+    session_category: CategoryChannel
 ):
     details = {}
     if before.channel:
-        channelTransition = "1"
+        channel_transition = "1"
         details['beforeChannel'] = str(before.channel.id)
 
         if before.self_stream:
-            streamTransition = "1"
+            stream_transition = "1"
         else:
-            streamTransition = "0"
+            stream_transition = "0"
 
         if before.self_video:
-            videoTransition = "1"
+            video_transition = "1"
         else:
-            videoTransition = "0"
+            video_transition = "0"
 
         if before.self_video or before.self_stream:
-            activityTransition = "1"
+            activity_transition = "1"
         else: 
-            activityTransition = "0"
+            activity_transition = "0"
 
         if isVcInCategory(
-            category=sessionCategory, 
+            category=session_category, 
             channel=before.channel
         ):
-            studyTransition = "1"
+            study_transition = "1"
         else:
-            studyTransition = "0"
-
+            study_transition = "0"
+        
         if after.channel:
-            channelTransition += "1"
+            channel_transition += "1"
             details['beforeChannel'] = str(before.channel.id)
             
             if isVcInCategory(
-                category=sessionCategory, 
+                category=session_category, 
                 channel=after.channel
             ):
-                studyTransition += "1"
+                study_transition += "1"
             else:
-                studyTransition += "0"
+                study_transition += "0"
         else:
-            channelTransition += "0"
-            studyTransition += "0"
+            channel_transition += "0"
+            study_transition += "0"
     else:
-        channelTransition = "0"
-        studyTransition = "0"
+        channel_transition = "0"
+        study_transition = "0"
 
         if after.channel:
-            channelTransition += "1"
+            channel_transition += "1"
 
             if after.self_stream:
-                streamTransition += "1"
+                stream_transition += "1"
             else:
-                streamTransition += "0"
+                stream_transition += "0"
 
             if after.self_video:
-                videoTransition += "1"
+                video_transition += "1"
             else:
-                videoTransition += "0"
+                video_transition += "0"
 
             if after.self_video or after.self_stream:
-                activityTransition += "1"
+                activity_transition += "1"
             else: 
-                activityTransition += "0"
+                activity_transition += "0"
             
             if isVcInCategory(
-                category=sessionCategory, 
+                category=session_category, 
                 channel=after.channel
             ):
-                studyTransition += "1"
+                study_transition += "1"
             else:
-                studyTransition += "0"
+                study_transition += "0"
         else:
-            channelTransition += "0"
-            studyTransition += "0"
+            channel_transition += "0"
+            study_transition += "0"
 
     details["transitions"] = {
-        "channel": channelTransition,
-        "study": studyTransition,
-        "cam": videoTransition,
-        "ss": streamTransition,
-        "activity": activityTransition
+        "channel": channel_transition,
+        "study": study_transition,
+        "cam": video_transition,
+        "ss": stream_transition,
+        "activity": activity_transition
     }
-    details["member"] = member.id
+    details["user_id"] = member.id
     return details

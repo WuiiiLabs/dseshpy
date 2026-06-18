@@ -14,7 +14,8 @@ from discord import VoiceState, Member
 
 # the below import and assigning is just for keyboard auto complete help
 import pymongo
-collections['session'] = pymongo.collection.Collection
+session = collections['session']
+session_collection = pymongo.collection.Collection
 
 class Session:
     """
@@ -22,120 +23,127 @@ class Session:
     """
     def __init__(
         self,
-        ownerID: str,
-        guildID: str, 
-        categoryID: str,
-        channelID: str,
-        membersLimit: int,
-        vcLevel: int = 1,
-        vcXP: int = 0,
-        rentType: str = "none",
-        rentAmount: int = 0,
-        isCamSession: bool = False,
-        isScreenShareSession: bool = False
-    ):
-        self.ownerID = ownerID
-        self.guildID = guildID
-        self.categoryID = categoryID
-        self.channelID = channelID
-        
-        # {total, noacc, ss, cam}
-        self.membersCount = {
+        owner_id: str,
+        guild_id: str, 
+        category_id: str,
+        channel_id: str,
+        members: dict = {},
+        members_limit: int = None,
+        members_count: dict = {
             "total": 0,
-            "noacc": 0,
+            "noact": 0,
             "ss": 0,
             "cam": 0
-        }
-        self.membersLimit = membersLimit
-        self.vcLevel = vcLevel
-        self.vcXP = vcXP
-        self.rentType = rentType
-        self.rentAmount = rentAmount
-        self.isCamSession = isCamSession
-        self.isScreenShareSession = isScreenShareSession
+        },
+        vc_level: int = 1,
+        vc_xp: int = 0,
+        rent_type: str = "free",
+        rent_amount: int = 0,
+        is_cam_session: bool = False,
+        is_screen_share_session: bool = False,
+        routine_callback_mean_time: int = 30
+    ):
+        self.owner_id = owner_id
+        self.guild_id = guild_id
+        self.category_id = category_id
+        self.channel_id = channel_id
         
-        self.drops = {} 
-        self.memberRegistry = {}
-        self.routineTask = None
-
-    def addDropItem(self, name: str, interval: int, amount: int, factor: float, routine: Routine):
-        self.drops[name] = {
-            "interval": interval,
-            "amount": amount,
-            "factor": factor,
-            "routine_": routine
-        }
-    
-    def removeDropItem(self, name: str):
-        self.drops.pop(name, None)
-
-    async def dropperRoutine(self, channel):
-        """
-        Centralized loop for all drops. 
-        Uses the channel object to send drop notifications.
-        """
-        try:
-            while True:
-                # Logic to iterate over self.drops and check intervals with variance
-                await asyncio.sleep(60) # Placeholder sleep
-                # print(f"Checking drops in {channel.name}...")
-                pass
-        except asyncio.CancelledError:
-            # Cleanup when the last user leaves
-            pass
-
-    def startRoutine(self, channel):
-        """Starts the routineTask if it is not already running"""
-        if not self.routineTask:
-            self.routineTask = asyncio.create_task(self.dropperRoutine(channel))
-
-    def stopRoutine(self):
-        """Cancels the routineTask and cleans up"""
-        if self.routineTask:
-            self.routineTask.cancel()
-            self.routineTask = None
+        self.members_count = members_count
+        self.members_limit = members_limit
+        self.vc_level = vc_level
+        self.vc_xp = vc_xp
+        self.rent_type = rent_type
+        self.rent_amount = rent_amount
+        self.is_cam_session = is_cam_session
+        self.is_screen_share_session = is_screen_share_session
+        
+        self.members = members
+        self.routine_callback_mean_time = routine_callback_mean_time
 
     async def manage(self, member: Member, before: VoiceState, after: VoiceState):
-        """
-        Orchestrates member entry/exit and state changes.
-        Updates membersCount: {total, noacc, ss, cam}
-        """
-        activityInfo = convStateToActivity(
+        activity_info = convStateToActivity(
             member=member,
             before=before,
             after=after,
-            sessionCategory=self.categoryID
+            session_category=self.category_id
         )
+        study_trans = activity_info["transitions"]["study"]
 
-        transition = activityInfo.get("studyTransition", "00")
-        userID = str(member.id)
+        # join the study channel
+        if study_trans == '01':
+            self.transfer_session(activity=activity_info)
+        elif study_trans == '11':
+            self.add_to_session(activity=activity_info)
+        elif study_trans == '10':
+            self.remove_from_session(activity=activity_info)
 
-        # 1. Handle Join
-        if transition == "01":
-            self.membersCount["total"] += 1
-            # Determine initial state (cam/ss/noacc) and update membersCount
-            # self.memberRegistry[userID] = newState
+    def add_to_session(self, activity: dict):
+        user_id = activity["user_id"]
+        is_ss = activity['transitions']['ss'][-1] == '1'
+        is_cam = activity['transitions']['cam'][-1] == '1'
+        is_first_member = self.members_count["total"] == 0
 
-            if self.membersCount["total"] == 1:
-                self.startRoutine(after.channel)
+        # Creating user data payload
+        user_data = {
+            "start_time": datetime.now(),
+            "cam": is_cam,
+            "ss": is_ss,
+            "session_goal": ""
+        }
 
-        # 2. Handle Leave
-        elif transition == "10":
-            self.membersCount["total"] -= 1
-            # Retrieve last state from memberRegistry and decrement that specific count
-            # self.memberRegistry.pop(userID)
+        try:
+            # If this fails, we don't update RAM, keeping them in sync
+            if is_first_member:
+                # Use insert_one or update_one with upsert
+                # Include the initial counts here
+                update_query = {
+                    "$set": {
+                        "members": {user_id: user_data},
+                        "members_count": {
+                            "total": 1,
+                            "ss": is_ss,
+                            "cam": is_cam,
+                            "noact": 1 if (not is_ss and not is_cam) else 0
+                        }
+                    }
+                }
+            else:
+                update_query = {
+                    "$inc": {
+                        "members_count.total": 1,
+                        "members_count.ss": is_ss,
+                        "members_count.cam": is_cam,
+                        "members_count.noact": 1 if (not is_ss and not is_cam) else 0
+                    },
+                    "$set": {f"members.{user_id}": user_data}
+                }
 
-            if self.membersCount["total"] == 0:
-                self.stopRoutine()
+            session_collection.update_one(
+                {"channel_id": activity['channel_id'], "guild_id": activity["guild_id"]},
+                update_query,
+                upsert=True
+            )
 
-        # 3. Handle State Toggle (Stay in Study VC)
-        elif transition == "11":
-            # Logic to detect cam/ss toggle and shift counts between noacc, ss, and cam
-            pass
+            # If DB succeeds, update RAM (The only way to ensure they stay together)
+            self.members[user_id] = user_data
+            self.members_count["total"] += 1
+            if is_ss: self.members_count["ss"] += 1
+            if is_cam: self.members_count["cam"] += 1
+            if not is_ss and not is_cam: self.members_count["noact"] += 1
 
+        except Exception as e:
+            print(f"Failed to add member to session: {e}")
+            # Rethrow so the caller knows the state is unstable
+            raise  
+ 
+    def complete_session(self, activity: dict):
+        pass
 
-    def isFull(self):
-        return self.membersCount["total"] >= self.membersLimit
+    def transfer_session(self, activity: dict):
+        pass
+
+    def is_full(self):
+        return self.members_count["total"] >= self.members_limit
 
     def boost(self, xp: int):
         pass
