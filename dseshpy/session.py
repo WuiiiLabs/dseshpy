@@ -1,21 +1,14 @@
-"""
-session
-===
-Contains session details 
-"""
 import asyncio
-from .drops import Routine
 from datetime import datetime
 from . import collections
-from converters import (
-    convStateToActivity,
-)
+import checks
 from discord import VoiceState, Member
+import discord
+import random
 
 # the below import and assigning is just for keyboard auto complete help
 import pymongo
-session = collections['session']
-session_collection = pymongo.collection.Collection
+session_collection = lambda: collections.get('session')
 
 class Session:
     """
@@ -23,32 +16,41 @@ class Session:
     """
     def __init__(
         self,
-        owner_id: str,
         guild_id: str, 
         category_id: str,
         channel_id: str,
-        members: dict = {},
+        owner_id: str = None,
+        members: dict = None,
+        active_count: int = 0,
         members_limit: int = None,
-        members_count: dict = {
-            "total": 0,
-            "noact": 0,
-            "ss": 0,
-            "cam": 0
-        },
+        members_count: dict = None,
         vc_level: int = 1,
         vc_xp: int = 0,
         rent_type: str = "free",
         rent_amount: int = 0,
+
+        # routines
+        routine_callback_mean_time: int = 30, # interval in minutes
+        routine_drop_amount: int = 10,
+        routines_fired_count: int=0,
+
+        # session type
         is_cam_session: bool = False,
         is_screen_share_session: bool = False,
-        routine_callback_mean_time: int = 30
+        is_no_activity_session: bool = True,
+        is_type_restricted_session: bool = False,
     ):
         self.owner_id = owner_id
         self.guild_id = guild_id
         self.category_id = category_id
         self.channel_id = channel_id
         
-        self.members_count = members_count
+        self.members_count = members_count or {
+            "total": 0,
+            "noact": 0,
+            "ss": 0,
+            "cam": 0
+        }
         self.members_limit = members_limit
         self.vc_level = vc_level
         self.vc_xp = vc_xp
@@ -56,117 +58,294 @@ class Session:
         self.rent_amount = rent_amount
         self.is_cam_session = is_cam_session
         self.is_screen_share_session = is_screen_share_session
+        self.is_no_activity_session = is_no_activity_session
+        self.is_type_restricted_session = is_type_restricted_session
         
-        self.members = members
+        self.members = members or {}
+        self.active_count = active_count
+        
         self.routine_callback_mean_time = routine_callback_mean_time
-
-    async def manage(self, member: Member, before: VoiceState, after: VoiceState):
-        activity_info = convStateToActivity(
-            member=member,
-            before=before,
-            after=after,
-            session_category=self.category_id
-        )
-        study_trans = activity_info["transitions"]["study"]
-
-        # join the study channel
-        if study_trans == '01':
-            self.transfer_session(activity=activity_info)
-        elif study_trans == '11':
-            self.add_to_session(activity=activity_info)
-        elif study_trans == '10':
-            self.remove_from_session(activity=activity_info)
-
-    def add_to_session(self, activity: dict):
-        user_id = activity["user_id"]
-        is_ss = activity['transitions']['ss'][-1] == '1'
-        is_cam = activity['transitions']['cam'][-1] == '1'
-        is_first_member = self.members_count["total"] == 0
-
-        # Creating user data payload
-        user_data = {
-            "start_time": datetime.now(),
-            "cam": is_cam,
-            "ss": is_ss,
-            "session_goal": ""
+        self.routine_drop_amount = routine_drop_amount
+        self.routines_fired_count = routines_fired_count
+        
+        # in-memory task tracking (not saved to DB)
+        self.monitor_tasks = {}
+        self.drop_task = None
+        
+    def to_dict(self):
+        """Convert session state to dictionary for MongoDB."""
+        return {
+            "_id": self.channel_id,
+            "owner_id": self.owner_id,
+            "guild_id": self.guild_id,
+            "category_id": self.category_id,
+            "channel_id": self.channel_id,
+            "members": self.members,
+            "active_count": self.active_count,
+            "members_limit": self.members_limit,
+            "members_count": self.members_count,
+            "vc_level": self.vc_level,
+            "vc_xp": self.vc_xp,
+            "rent_type": self.rent_type,
+            "rent_amount": self.rent_amount,
+            "routine_callback_mean_time": self.routine_callback_mean_time,
+            "routine_drop_amount": self.routine_drop_amount,
+            "routines_fired_count": self.routines_fired_count,
+            "is_cam_session": self.is_cam_session,
+            "is_screen_share_session": self.is_screen_share_session,
+            "is_no_activity_session": self.is_no_activity_session,
+            "is_type_restricted_session": self.is_type_restricted_session,
         }
 
+    @classmethod
+    def from_dict(cls, data: dict):
+        """Create a Session from MongoDB document."""
+        data.pop("_id", None)
+        return cls(**data)
+
+    async def activity_monitor(self, member: Member):
+        """Wait 5 minutes and disconnect user if they don't enable camera or screen share."""
+        await asyncio.sleep(300)
+        
+        if member.voice and checks.get_session_status(member.voice, self.category_id):
+            if not checks.is_session_activity(member.voice):
+                try:
+                    await member.voice.channel.send(
+                        embed=discord.Embed(
+                            description=f"{member.mention} Inactivity Detected. 🚨",
+                            color=0x3498DB,
+                        ),
+                        delete_after=20,
+                    )
+                    await member.move_to(None)
+                except:
+                    pass
+
+    async def drop_routine(self, channel: discord.VoiceChannel):
+        """Drops randomized rewards periodically for all members in the session based on their activity."""
         try:
-            # If this fails, we don't update RAM, keeping them in sync
-            if is_first_member:
-                # Use insert_one or update_one with upsert
-                # Include the initial counts here
-                update_query = {
-                    "$set": {
-                        "members": {user_id: user_data},
-                        "members_count": {
-                            "total": 1,
-                            "ss": is_ss,
-                            "cam": is_cam,
-                            "noact": 1 if (not is_ss and not is_cam) else 0
-                        }
-                    }
-                }
-            else:
-                update_query = {
-                    "$inc": {
-                        "members_count.total": 1,
-                        "members_count.ss": is_ss,
-                        "members_count.cam": is_cam,
-                        "members_count.noact": 1 if (not is_ss and not is_cam) else 0
-                    },
-                    "$set": {f"members.{user_id}": user_data}
-                }
-
-            session_collection.update_one(
-                {"channel_id": activity['channel_id'], "guild_id": activity["guild_id"]},
-                update_query,
-                upsert=True
-            )
-
-            # If DB succeeds, update RAM (The only way to ensure they stay together)
-            self.members[user_id] = user_data
-            self.members_count["total"] += 1
-            if is_ss: self.members_count["ss"] += 1
-            if is_cam: self.members_count["cam"] += 1
-            if not is_ss and not is_cam: self.members_count["noact"] += 1
-
+            while True:
+                # Calculate randomized interval
+                interval = random.uniform(0.5, 1.5) * self.routine_callback_mean_time
+                await asyncio.sleep(interval * 60)
+                
+                if not channel.members:
+                    continue
+                    
+                embed = discord.Embed(
+                    title="💰 Session Rewards Dropped! 💰",
+                    color=discord.Color.gold()
+                )
+                
+                base_drop = self.routine_drop_amount
+                # Renting, boosting, and VC level increase rewards
+                multiplier = 1.0 + (self.vc_level * 0.1) + (self.rent_amount * 0.05)
+                
+                drop_details = []
+                for member in channel.members:
+                    if member.bot: continue
+                    
+                    state = member.voice
+                    if not state: continue
+                    
+                    # Reward hierarchy
+                    if state.self_video and state.self_stream:
+                        activity_mult = 2.5
+                        act_str = "Cam + Stream"
+                    elif state.self_video:
+                        activity_mult = 2.0
+                        act_str = "Cam"
+                    elif state.self_stream:
+                        activity_mult = 1.5
+                        act_str = "Stream"
+                    else:
+                        activity_mult = 1.0
+                        act_str = "No Activity"
+                        
+                    mean_drop = base_drop * multiplier * activity_mult
+                    variance = mean_drop * 0.2  # 20% variance shift
+                    
+                    actual_drop = max(1, int(random.uniform(mean_drop - variance, mean_drop + variance)))
+                    
+                    drop_details.append(f"{member.mention}: **{actual_drop}** 🪙 *({act_str})*")
+                
+                if drop_details:
+                    embed.description = "\n".join(drop_details)
+                    self.routines_fired_count += 1
+                    await channel.send(embed=embed, delete_after=60)
+                    
+        except asyncio.CancelledError:
+            pass
         except Exception as e:
-            print(f"Failed to add member to session: {e}")
-            # Rethrow so the caller knows the state is unstable
-            raise  
- 
-    def complete_session(self, activity: dict):
-        pass
+            print(f"Drop routine error: {e}")
 
-    def transfer_session(self, activity: dict):
-        pass
+    def update_settings(self, **kwargs):
+        """Dynamically update session details like rent, vc_level, etc., ensuring DB sync."""
+        updated = False
+        for key, value in kwargs.items():
+            if hasattr(self, key):
+                setattr(self, key, value)
+                updated = True
+        return updated
 
-    def is_full(self):
-        return self.members_count["total"] >= self.members_limit
+    def _handle_activity_start(self):
+        self.active_count += 1
 
-    def boost(self, xp: int):
-        pass
+    def _handle_activity_stop(self):
+        self.active_count = max(0, self.active_count - 1)
+
+    async def manage(self, member: Member, before: VoiceState, after: VoiceState):
+        member_id = str(member.id)
+        
+        # Determine the channel relevant to this session instance
+        channel = after.channel if (after.channel and str(after.channel.id) == self.channel_id) else before.channel
+        
+        is_after_in_session = after.channel and str(after.channel.id) == self.channel_id
+        is_before_in_session = before.channel and str(before.channel.id) == self.channel_id
+        
+        if is_after_in_session and not is_before_in_session:
+            # JOIN EVENT
+            self.members[member_id] = {"joined_at": datetime.now().isoformat()}
+            
+            # Start drop task if first member joins
+            if len(self.members) == 1 and not self.drop_task:
+                self.drop_task = asyncio.create_task(self.drop_routine(channel))
+            
+            task = asyncio.create_task(self.activity_monitor(member))
+            self.monitor_tasks[member_id] = task
+            
+            if checks.is_session_activity(after):
+                self._handle_activity_start()
+                task.cancel()
+                self.monitor_tasks.pop(member_id, None)
+                
+            embed = discord.Embed(
+                title=f"🎉 {member.display_name} joined the session! 🎉",
+                description=f"Welcome {member.mention}!\nStudy time starts!",
+                color=0x3498DB,
+            )
+            embed.add_field(
+                name="Request",
+                value="🔴 Please turn on your **camera or screen share**. Otherwise, you may be removed after 5 minutes!",
+                inline=False
+            )
+            await channel.send(content=member.mention, embed=embed, delete_after=20)
+            
+        elif is_before_in_session and not is_after_in_session:
+            # LEAVE EVENT
+            if member_id in self.monitor_tasks:
+                self.monitor_tasks[member_id].cancel()
+                del self.monitor_tasks[member_id]
+            self.members.pop(member_id, None)
+            
+            # Cancel drop task if everyone left
+            if len(self.members) == 0 and self.drop_task:
+                self.drop_task.cancel()
+                self.drop_task = None
+            
+            if checks.is_session_activity(before):
+                self._handle_activity_stop()
+                
+            await channel.send(
+                embed=discord.Embed(
+                    description=f"{member.mention} might be on a break. ☕",
+                    color=0x3498DB,
+                ),
+                delete_after=90,
+            )
+            
+        elif is_before_in_session and is_after_in_session:
+            # STILL IN SESSION (Activity state changed)
+            if checks.is_activity_started(before, after):
+                if member_id in self.monitor_tasks:
+                    self.monitor_tasks[member_id].cancel()
+                    del self.monitor_tasks[member_id]
+                    
+                self._handle_activity_start()
+                
+                await channel.send(
+                    embed=discord.Embed(
+                        description=f"{member.mention}'s Activity Detected! ✅",
+                        color=0x3498DB,
+                    ),
+                    delete_after=20,
+                )
+                
+            elif checks.is_activity_stopped(before, after):
+                self._handle_activity_stop()
+                
+                embed = discord.Embed(
+                    title="⚠️ Attention Required!",
+                    description=f"{member.mention}, you turned off your camera or screen share.\n"
+                    "Please turn it back on within **5 minutes**, or you will be removed.",
+                    color=discord.Color.orange(),
+                )
+                await channel.send(embed=embed, delete_after=20)
+                
+                old_task = self.monitor_tasks.get(member_id)
+                if old_task:
+                    old_task.cancel()
+                    
+                task = asyncio.create_task(self.activity_monitor(member))
+                self.monitor_tasks[member_id] = task
 
 class SessionManager:
     """
-    A discord study session needs to be managed properly. 
-    Thus requiring a need of session manager.
-    Individual sessions would be just like random in memory otherwise.
-
-    Sessions can be managed at multiple levels.
-    - Global Level
-    - Guild Level
-
-    Despite of what level, 
-    Session Managers have certain properties and functionalities.
-
-    Properties like:
-    ---
-    - session_count
-    (lets just keep this for now)
-
-    Functionalities like:
-    - sync() : To sync to database
+    Manages discord study sessions seamlessly. Ensures single point of handling and DB sync.
     """
-    pass
+    def __init__(self):
+        self.active_sessions = {}
+
+    def _get_collection(self):
+        col = session_collection()
+        if col is None:
+            raise Exception("Session collection not initialized.")
+        return col
+
+    def sync(self, session: Session):
+        """Syncs a single session state to MongoDB."""
+        col = self._get_collection()
+        col.update_one(
+            {"_id": session.channel_id},
+            {"$set": session.to_dict()},
+            upsert=True
+        )
+
+    async def get_or_create_session(self, guild_id: str, category_id: str, channel_id: str) -> Session:
+        """Fetches from memory, then DB, or creates anew."""
+        if channel_id in self.active_sessions:
+            return self.active_sessions[channel_id]
+
+        col = self._get_collection()
+        data = col.find_one({"_id": channel_id})
+        
+        if data:
+            session = Session.from_dict(data)
+        else:
+            session = Session(
+                guild_id=guild_id,
+                category_id=category_id,
+                channel_id=channel_id
+            )
+            
+        self.active_sessions[channel_id] = session
+        return session
+
+    async def process(self, member: Member, before: VoiceState, after: VoiceState, category_id: str):
+        """
+        Single entry point to handle voice state updates.
+        Delegates the event to the correct Session object(s) and ensures DB synchronization.
+        """
+        channels_involved = set()
+        
+        if before.channel and checks.get_session_status(before, category_id):
+            channels_involved.add(str(before.channel.id))
+        
+        if after.channel and checks.get_session_status(after, category_id):
+            channels_involved.add(str(after.channel.id))
+
+        for channel_id in channels_involved:
+            session = await self.get_or_create_session(str(member.guild.id), category_id, channel_id)
+            await session.manage(member, before, after)
+            self.sync(session)
+
